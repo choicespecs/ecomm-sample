@@ -6,6 +6,15 @@ import (
 	"net/http"
 )
 
+type Notification struct {
+	UserID  int    `json:"user_id"`
+	Message string `json:"message"`
+}
+
+func Send(notif Notification) {
+	log.Printf("Notification sent to UserID %d: %s", notif.UserID, notif.Message)
+}
+
 func handleNotification(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is supported", http.StatusMethodNotAllowed)

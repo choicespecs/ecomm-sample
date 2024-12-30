@@ -8,6 +8,13 @@ import (
 	"net/http"
 )
 
+type Order struct {
+	OrderID   int    `json:"order_id"`
+	ProductID int    `json:"product_id"`
+	UserID    int    `json:"user_id"`
+	Quantity  int    `json:"quantity"`
+}
+
 func handleOrder(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is supported", http.StatusMethodNotAllowed)
