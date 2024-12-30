@@ -1,4 +1,0 @@
-pymongo==4.5.0       # MongoDB driver
-kombu==5.2.4         # RabbitMQ integration
-fastapi==0.95.0      # Web framework (replace with Flask if applicable)
-uvicorn==0.21.1      # FastAPI ASGI server
