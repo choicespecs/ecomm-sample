@@ -3,8 +3,20 @@ package main
 import (
 	"encoding/json"
 	"log"
-	"net/http"
+	"time"
+
+	"github.com/streadway/amqp"
 )
+
+type StockRequest struct {
+	ProductID int `json:"product_id"`
+	Quantity  int `json:"quantity"`
+}
+
+type StockResponse struct {
+	ProductID   int  `json:"product_id"`
+	IsAvailable bool `json:"is_available"`
+}
 
 var stock = map[int]int{
 	101: 10,
@@ -12,45 +24,71 @@ var stock = map[int]int{
 	103: 0,
 }
 
-type StockRequest struct {
-	ProductID int `json:"product_id"`
-	Quantity  int `json:"quantity"`
-}
-
 func CheckStock(productID, quantity int) bool {
 	available, exists := stock[productID]
 	return exists && available >= quantity
 }
 
-func handleCheckStock(w http.ResponseWriter, r *http.Request) {
-	log.Println("Request received on /check-stock")
-
-	if r.Method != http.MethodPost {
-		log.Println("Invalid method:", r.Method)
-		http.Error(w, "Only POST method is supported", http.StatusMethodNotAllowed)
-		return
+func connectToRabbitMQ() *amqp.Connection {
+	var conn *amqp.Connection
+	var err error
+	for retries := 0; retries < 5; retries++ {
+		conn, err = amqp.Dial("amqp://guest:guest@localhost:5672/")
+		if err == nil {
+			return conn
+		}
+		log.Printf("Retrying RabbitMQ connection: attempt %d", retries+1)
+		time.Sleep(2 * time.Second)
 	}
-
-	var request StockRequest
-	err := json.NewDecoder(r.Body).Decode(&request)
-	if err != nil {
-		log.Println("Error decoding request:", err)
-		http.Error(w, "Invalid request data", http.StatusBadRequest)
-		return
-	}
-
-	log.Printf("Checking stock for ProductID: %d, Quantity: %d\n", request.ProductID, request.Quantity)
-	if CheckStock(request.ProductID, request.Quantity) {
-		log.Println("Stock is available")
-		w.WriteHeader(http.StatusOK)
-	} else {
-		log.Println("Insufficient stock")
-		http.Error(w, "Insufficient stock", http.StatusConflict)
-	}
+	log.Fatalf("Failed to connect to RabbitMQ: %v", err)
+	return nil
 }
 
 func main() {
-	http.HandleFunc("/check-stock", handleCheckStock)
-	log.Println("Inventory Service running on http://localhost:8081...")
-	log.Fatal(http.ListenAndServe(":8081", nil))
+	conn := connectToRabbitMQ()
+	defer conn.Close()
+
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Fatalf("Failed to open a channel: %v", err)
+	}
+	defer ch.Close()
+
+	// Declare queue
+	_, err = ch.QueueDeclare("check_stock", true, false, false, false, nil)
+	if err != nil {
+		log.Fatalf("Failed to declare check_stock queue: %v", err)
+	}
+
+	// Consume messages from the check_stock queue
+	msgs, err := ch.Consume("check_stock", "", true, false, false, false, nil)
+	if err != nil {
+		log.Fatalf("Failed to register a consumer: %v", err)
+	}
+
+	log.Println("Inventory Service waiting for messages...")
+
+	for msg := range msgs {
+		var req StockRequest
+		err := json.Unmarshal(msg.Body, &req)
+		if err != nil {
+			log.Printf("Failed to parse message: %v", err)
+			continue
+		}
+
+		response := StockResponse{
+			ProductID:   req.ProductID,
+			IsAvailable: CheckStock(req.ProductID, req.Quantity),
+		}
+
+		responseBody, _ := json.Marshal(response)
+		err = ch.Publish("", msg.ReplyTo, false, false, amqp.Publishing{
+			ContentType:   "application/json",
+			CorrelationId: msg.CorrelationId,
+			Body:          responseBody,
+		})
+		if err != nil {
+			log.Printf("Failed to publish message: %v", err)
+		}
+	}
 }

@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"log"
-	"net/http"
+	"time"
+
+	"github.com/streadway/amqp"
 )
 
 type Notification struct {
@@ -11,29 +13,53 @@ type Notification struct {
 	Message string `json:"message"`
 }
 
-func Send(notif Notification) {
-	log.Printf("Notification sent to UserID %d: %s", notif.UserID, notif.Message)
-}
-
-func handleNotification(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Only POST method is supported", http.StatusMethodNotAllowed)
-		return
+func connectToRabbitMQ() *amqp.Connection {
+	var conn *amqp.Connection
+	var err error
+	for retries := 0; retries < 5; retries++ {
+		conn, err = amqp.Dial("amqp://guest:guest@localhost:5672/")
+		if err == nil {
+			return conn
+		}
+		log.Printf("Retrying RabbitMQ connection: attempt %d", retries+1)
+		time.Sleep(2 * time.Second)
 	}
-
-	var notif Notification
-	err := json.NewDecoder(r.Body).Decode(&notif)
-	if err != nil {
-		http.Error(w, "Invalid notification data", http.StatusBadRequest)
-		return
-	}
-
-	Send(notif)
-	w.WriteHeader(http.StatusOK)
+	log.Fatalf("Failed to connect to RabbitMQ: %v", err)
+	return nil
 }
 
 func main() {
-	http.HandleFunc("/notify", handleNotification)
-	log.Println("Notification Service running on http://localhost:8082...")
-	log.Fatal(http.ListenAndServe(":8082", nil))
+	conn := connectToRabbitMQ()
+	defer conn.Close()
+
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Fatalf("Failed to open a channel: %v", err)
+	}
+	defer ch.Close()
+
+	// Declare queue
+	_, err = ch.QueueDeclare("notifications", true, false, false, false, nil)
+	if err != nil {
+		log.Fatalf("Failed to declare notifications queue: %v", err)
+	}
+
+	// Consume messages from the notifications queue
+	msgs, err := ch.Consume("notifications", "", true, false, false, false, nil)
+	if err != nil {
+		log.Fatalf("Failed to register a consumer: %v", err)
+	}
+
+	log.Println("Notification Service waiting for messages...")
+
+	for msg := range msgs {
+		var notif Notification
+		err := json.Unmarshal(msg.Body, &notif)
+		if err != nil {
+			log.Printf("Failed to parse message: %v", err)
+			continue
+		}
+
+		log.Printf("Notification sent to UserID %d: %s", notif.UserID, notif.Message)
+	}
 }
