@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/streadway/amqp"
+	"github.com/rabbitmq/amqp091-go"
 )
 
 type StockRequest struct {
@@ -29,11 +29,11 @@ func CheckStock(productID, quantity int) bool {
 	return exists && available >= quantity
 }
 
-func connectToRabbitMQ() *amqp.Connection {
-	var conn *amqp.Connection
+func connectToRabbitMQ() *amqp091.Connection {
+	var conn *amqp091.Connection
 	var err error
 	for retries := 0; retries < 5; retries++ {
-		conn, err = amqp.Dial("amqp://guest:guest@localhost:5672/")
+		conn, err = amqp091.Dial("amqp://guest:guest@localhost:5672/")
 		if err == nil {
 			return conn
 		}
@@ -82,11 +82,18 @@ func main() {
 		}
 
 		responseBody, _ := json.Marshal(response)
-		err = ch.Publish("", msg.ReplyTo, false, false, amqp.Publishing{
-			ContentType:   "application/json",
-			CorrelationId: msg.CorrelationId,
-			Body:          responseBody,
-		})
+		err = ch.PublishWithContext(
+			nil,
+			"",
+			msg.ReplyTo,
+			false,
+			false,
+			amqp091.Publishing{
+				ContentType:   "application/json",
+				CorrelationId: msg.CorrelationId,
+				Body:          responseBody,
+			},
+		)
 		if err != nil {
 			log.Printf("Failed to publish message: %v", err)
 		}

@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/streadway/amqp"
+	"github.com/rabbitmq/amqp091-go"
 )
 
 type Notification struct {
@@ -13,11 +13,11 @@ type Notification struct {
 	Message string `json:"message"`
 }
 
-func connectToRabbitMQ() *amqp.Connection {
-	var conn *amqp.Connection
+func connectToRabbitMQ() *amqp091.Connection {
+	var conn *amqp091.Connection
 	var err error
 	for retries := 0; retries < 5; retries++ {
-		conn, err = amqp.Dial("amqp://guest:guest@localhost:5672/")
+		conn, err = amqp091.Dial("amqp://guest:guest@localhost:5672/")
 		if err == nil {
 			return conn
 		}

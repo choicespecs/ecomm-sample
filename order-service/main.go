@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/streadway/amqp"
+	"github.com/rabbitmq/amqp091-go"
 )
 
 type Order struct {
@@ -15,11 +15,11 @@ type Order struct {
 	Quantity  int    `json:"quantity"`
 }
 
-func connectToRabbitMQ() *amqp.Connection {
-	var conn *amqp.Connection
+func connectToRabbitMQ() *amqp091.Connection {
+	var conn *amqp091.Connection
 	var err error
 	for retries := 0; retries < 5; retries++ {
-		conn, err = amqp.Dial("amqp://guest:guest@localhost:5672/")
+		conn, err = amqp091.Dial("amqp://guest:guest@localhost:5672/")
 		if err == nil {
 			return conn
 		}
@@ -46,14 +46,14 @@ func main() {
 		log.Fatalf("Failed to declare check_stock queue: %v", err)
 	}
 
+	responseQueue, err := ch.QueueDeclare("response_order_service", true, false, false, false, nil)
+	if err != nil {
+		log.Fatalf("Failed to declare response queue: %v", err)
+	}
+
 	_, err = ch.QueueDeclare("notifications", true, false, false, false, nil)
 	if err != nil {
 		log.Fatalf("Failed to declare notifications queue: %v", err)
-	}
-
-	responseQueue, err := ch.QueueDeclare("response_queue", true, false, false, false, nil)
-	if err != nil {
-		log.Fatalf("Failed to declare response queue: %v", err)
 	}
 
 	// Consume messages from the response queue
@@ -68,12 +68,19 @@ func main() {
 	// Publish stock-check request
 	corrID := "random-correlation-id"
 	requestBody, _ := json.Marshal(order)
-	err = ch.Publish("", "check_stock", false, false, amqp.Publishing{
-		ContentType:   "application/json",
-		CorrelationId: corrID,
-		ReplyTo:       responseQueue.Name,
-		Body:          requestBody,
-	})
+	err = ch.PublishWithContext(
+		nil,
+		"",
+		"check_stock",
+		false,
+		false,
+		amqp091.Publishing{
+			ContentType:   "application/json",
+			CorrelationId: corrID,
+			ReplyTo:       responseQueue.Name,
+			Body:          requestBody,
+		},
+	)
 	if err != nil {
 		log.Fatalf("Failed to publish stock-check request: %v", err)
 	}
@@ -93,10 +100,17 @@ func main() {
 		"message":  "Order processed successfully!",
 	}
 	notifyBody, _ := json.Marshal(notification)
-	err = ch.Publish("", "notifications", false, false, amqp.Publishing{
-		ContentType: "application/json",
-		Body:        notifyBody,
-	})
+	err = ch.PublishWithContext(
+		nil,
+		"",
+		"notifications",
+		false,
+		false,
+		amqp091.Publishing{
+			ContentType: "application/json",
+			Body:        notifyBody,
+		},
+	)
 	if err != nil {
 		log.Printf("Failed to publish notification: %v", err)
 	}
