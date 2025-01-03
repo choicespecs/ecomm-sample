@@ -1,12 +1,66 @@
-version: '3.8'
+version: "3.8"
 
 services:
   rabbitmq:
     image: docker.io/library/rabbitmq:management
     container_name: rabbitmq
     ports:
-      - "5672:5672" # RabbitMQ messaging port
-      - "15672:15672" # RabbitMQ management UI port
+      - "5672:5672" # Messaging port
+      - "15672:15672" # Management UI port
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
+
+  inventory_service:
+    build:
+      context: ./inventory_service
+    depends_on:
+      - rabbitmq
+      - inventory_db
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      DATABASE_URL: postgres://user:password@inventory_db:5432/inventory_db
+
+  notification_service:
+    build:
+      context: ./notification_service
+    depends_on:
+      - rabbitmq
+      - notification_db
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      DATABASE_URL: postgres://user:password@notification_db:5432/notification_db
+
+  order_service:
+    build:
+      context: ./order_service
+    depends_on:
+      - rabbitmq
+      - order_db
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      DATABASE_URL: postgres://user:password@order_db:5432/order_db
+
+  inventory_db:
+    image: docker.io/library/postgres:15
+    container_name: inventory_db
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: inventory_db
+
+  notification_db:
+    image: docker.io/library/postgres:15
+    container_name: notification_db
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: notification_db
+
+  order_db:
+    image: docker.io/library/postgres:15
+    container_name: order_db
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: order_db

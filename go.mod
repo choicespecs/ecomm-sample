@@ -1,5 +1,5 @@
 module ecomm-sample
 
-go 1.23.4
+go 1.20
 
 require github.com/rabbitmq/amqp091-go v1.10.0 // indirect

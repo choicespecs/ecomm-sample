@@ -3,15 +3,15 @@
 # Automatically detect service directories relative to the script's location
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_DIRS=(
-  "$BASE_DIR/api-gateway"
-  "$BASE_DIR/inventory-service"
-  "$BASE_DIR/notification-service"
-  "$BASE_DIR/order-service"
+  "$BASE_DIR/api_gateway"
+  "$BASE_DIR/inventory_service"
+  "$BASE_DIR/notification_service"
+  "$BASE_DIR/order_service"
 )
 
 # Step 1: Start Podman Compose
 echo "Starting Podman Compose..."
-podman-compose up -d
+podman-compose up --build -d
 if [ $? -ne 0 ]; then
   echo "Failed to start Podman Compose. Exiting."
   exit 1
