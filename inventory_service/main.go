@@ -1,10 +1,12 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"time"
 
+	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/rabbitmq/amqp091-go"
 )
 
@@ -18,22 +20,41 @@ type StockResponse struct {
 	IsAvailable bool `json:"is_available"`
 }
 
-var stock = map[int]int{
-	101: 10,
-	102: 5,
-	103: 0,
+var db *sql.DB
+
+func connectToDatabase() {
+	var err error
+	connStr := "postgres://inventory_user:password@localhost:5432/inventory_db?sslmode=disable"
+	db, err = sql.Open("postgres", connStr)
+	if err != nil {
+		log.Fatalf("Failed to connect to the database: %v", err)
+	}
+
+	err = db.Ping()
+	if err != nil {
+		log.Fatalf("Database connection not established: %v", err)
+	}
+	log.Println("Connected to the database successfully.")
 }
 
 func CheckStock(productID, quantity int) bool {
-	available, exists := stock[productID]
-	return exists && available >= quantity
+	var available int
+	err := db.QueryRow("SELECT stock FROM inventory WHERE product_id = $1", productID).Scan(&available)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false // Product not found
+		}
+		log.Printf("Error checking stock for product ID %d: %v", productID, err)
+		return false
+	}
+	return available >= quantity
 }
 
 func connectToRabbitMQ() *amqp091.Connection {
 	var conn *amqp091.Connection
 	var err error
 	for retries := 0; retries < 5; retries++ {
-		conn, err = amqp091.Dial("amqp://guest:guest@localhost:5672/")
+		conn, err = amqp091.Dial("amqp://guest:guest@rabbitmq:5672/")
 		if err == nil {
 			return conn
 		}
@@ -45,6 +66,11 @@ func connectToRabbitMQ() *amqp091.Connection {
 }
 
 func main() {
+	// Connect to the database
+	connectToDatabase()
+	defer db.Close()
+
+	// Connect to RabbitMQ
 	conn := connectToRabbitMQ()
 	defer conn.Close()
 

@@ -62,56 +62,31 @@ func main() {
 		log.Fatalf("Failed to consume from response queue: %v", err)
 	}
 
-	// Simulate order processing
-	order := Order{OrderID: 1, ProductID: 101, UserID: 1, Quantity: 3}
+	log.Println("Order Service waiting for stock responses...")
 
-	// Publish stock-check request
-	corrID := "random-correlation-id"
-	requestBody, _ := json.Marshal(order)
-	err = ch.PublishWithContext(
-		nil,
-		"",
-		"check_stock",
-		false,
-		false,
-		amqp091.Publishing{
-			ContentType:   "application/json",
-			CorrelationId: corrID,
-			ReplyTo:       responseQueue.Name,
-			Body:          requestBody,
-		},
-	)
-	if err != nil {
-		log.Fatalf("Failed to publish stock-check request: %v", err)
-	}
-
-	log.Println("Waiting for stock response...")
 	for msg := range msgs {
-		if msg.CorrelationId == corrID {
-			// Process the response
-			log.Printf("Stock response received: %s", msg.Body)
-			break
-		}
-	}
+		// Process each stock response
+		log.Printf("Stock response received: %s", msg.Body)
 
-	// Publish notification
-	notification := map[string]interface{}{
-		"user_id":  order.UserID,
-		"message":  "Order processed successfully!",
-	}
-	notifyBody, _ := json.Marshal(notification)
-	err = ch.PublishWithContext(
-		nil,
-		"",
-		"notifications",
-		false,
-		false,
-		amqp091.Publishing{
-			ContentType: "application/json",
-			Body:        notifyBody,
-		},
-	)
-	if err != nil {
-		log.Printf("Failed to publish notification: %v", err)
+		// Publish notification after processing stock response
+		notification := map[string]interface{}{
+			"user_id":  1, // Replace with actual user ID
+			"message":  "Order processed successfully!",
+		}
+		notifyBody, _ := json.Marshal(notification)
+		err := ch.PublishWithContext(
+			nil,
+			"",
+			"notifications",
+			false,
+			false,
+			amqp091.Publishing{
+				ContentType: "application/json",
+				Body:        notifyBody,
+			},
+		)
+		if err != nil {
+			log.Printf("Failed to publish notification: %v", err)
+		}
 	}
 }
