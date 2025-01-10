@@ -1,10 +1,12 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"time"
 
+	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/rabbitmq/amqp091-go"
 )
 
@@ -15,11 +17,28 @@ type Order struct {
 	Quantity  int    `json:"quantity"`
 }
 
+var db *sql.DB
+
+func connectToDatabase() {
+	var err error
+	connStr := "postgres://order_user:password@localhost:5432/order_db?sslmode=disable"
+	db, err = sql.Open("postgres", connStr)
+	if err != nil {
+		log.Fatalf("Failed to connect to the database: %v", err)
+	}
+
+	err = db.Ping()
+	if err != nil {
+		log.Fatalf("Database connection not established: %v", err)
+	}
+	log.Println("Connected to the database successfully.")
+}
+
 func connectToRabbitMQ() *amqp091.Connection {
 	var conn *amqp091.Connection
 	var err error
 	for retries := 0; retries < 5; retries++ {
-		conn, err = amqp091.Dial("amqp://guest:guest@localhost:5672/")
+		conn, err = amqp091.Dial("amqp://guest:guest@rabbitmq:5672/")
 		if err == nil {
 			return conn
 		}
@@ -31,6 +50,9 @@ func connectToRabbitMQ() *amqp091.Connection {
 }
 
 func main() {
+	connectToDatabase()
+	defer db.Close()
+	
 	conn := connectToRabbitMQ()
 	defer conn.Close()
 
