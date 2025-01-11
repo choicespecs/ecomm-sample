@@ -1,10 +1,12 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"time"
 
+	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/rabbitmq/amqp091-go"
 )
 
@@ -15,11 +17,28 @@ type Order struct {
 	Quantity  int    `json:"quantity"`
 }
 
+var db *sql.DB
+
+func connectToDatabase() {
+	var err error
+	connStr := "postgres://order_user:password@localhost:5432/order_db?sslmode=disable"
+	db, err = sql.Open("postgres", connStr)
+	if err != nil {
+		log.Fatalf("Failed to connect to the database: %v", err)
+	}
+
+	err = db.Ping()
+	if err != nil {
+		log.Fatalf("Database connection not established: %v", err)
+	}
+	log.Println("Connected to the database successfully.")
+}
+
 func connectToRabbitMQ() *amqp091.Connection {
 	var conn *amqp091.Connection
 	var err error
 	for retries := 0; retries < 5; retries++ {
-		conn, err = amqp091.Dial("amqp://guest:guest@localhost:5672/")
+		conn, err = amqp091.Dial("amqp://guest:guest@rabbitmq:5672/")
 		if err == nil {
 			return conn
 		}
@@ -31,6 +50,9 @@ func connectToRabbitMQ() *amqp091.Connection {
 }
 
 func main() {
+	connectToDatabase()
+	defer db.Close()
+	
 	conn := connectToRabbitMQ()
 	defer conn.Close()
 
@@ -62,56 +84,31 @@ func main() {
 		log.Fatalf("Failed to consume from response queue: %v", err)
 	}
 
-	// Simulate order processing
-	order := Order{OrderID: 1, ProductID: 101, UserID: 1, Quantity: 3}
+	log.Println("Order Service waiting for stock responses...")
 
-	// Publish stock-check request
-	corrID := "random-correlation-id"
-	requestBody, _ := json.Marshal(order)
-	err = ch.PublishWithContext(
-		nil,
-		"",
-		"check_stock",
-		false,
-		false,
-		amqp091.Publishing{
-			ContentType:   "application/json",
-			CorrelationId: corrID,
-			ReplyTo:       responseQueue.Name,
-			Body:          requestBody,
-		},
-	)
-	if err != nil {
-		log.Fatalf("Failed to publish stock-check request: %v", err)
-	}
-
-	log.Println("Waiting for stock response...")
 	for msg := range msgs {
-		if msg.CorrelationId == corrID {
-			// Process the response
-			log.Printf("Stock response received: %s", msg.Body)
-			break
-		}
-	}
+		// Process each stock response
+		log.Printf("Stock response received: %s", msg.Body)
 
-	// Publish notification
-	notification := map[string]interface{}{
-		"user_id":  order.UserID,
-		"message":  "Order processed successfully!",
-	}
-	notifyBody, _ := json.Marshal(notification)
-	err = ch.PublishWithContext(
-		nil,
-		"",
-		"notifications",
-		false,
-		false,
-		amqp091.Publishing{
-			ContentType: "application/json",
-			Body:        notifyBody,
-		},
-	)
-	if err != nil {
-		log.Printf("Failed to publish notification: %v", err)
+		// Publish notification after processing stock response
+		notification := map[string]interface{}{
+			"user_id":  1, // Replace with actual user ID
+			"message":  "Order processed successfully!",
+		}
+		notifyBody, _ := json.Marshal(notification)
+		err := ch.PublishWithContext(
+			nil,
+			"",
+			"notifications",
+			false,
+			false,
+			amqp091.Publishing{
+				ContentType: "application/json",
+				Body:        notifyBody,
+			},
+		)
+		if err != nil {
+			log.Printf("Failed to publish notification: %v", err)
+		}
 	}
 }
