@@ -18,4 +18,5 @@ su - postgres -c "psql notification_db -c \"CREATE TABLE users (
     name VARCHAR(100) NOT NULL,
     email VARCHAR(255) NOT NULL
 );\""
+su - postgres -c "psql inventory_db -c \"ALTER TABLE notification_db OWNER TO notification_user;\""
 su - postgres -c "psql notification_db -c \"INSERT INTO users (name, email) VALUES ('John Smith', 'john.smith@test.com'), ('David Barrow', 'david.man@example.com'), ('Diana Terry', 'dterr49@test.com');\""

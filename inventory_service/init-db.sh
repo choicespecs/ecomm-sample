@@ -19,7 +19,8 @@ su - postgres -c "psql inventory_db -c \"CREATE TABLE inventory (
     name VARCHAR(100) NOT NULL,
     stock INT NOT NULL
 );\""
-su - postgres -c "psql inventory_db -c \"INSERT INTO inventory (name, stock) VALUES ('Broccoli', 10), ('Beer', 5), ('Snacks', 0);\""
+su - postgres -c "psql inventory_db -c \"ALTER TABLE inventory OWNER TO inventory_user;\""
+su - postgres -c "psql inventory_db -c \"INSERT INTO inventory (product_id, name, stock) VALUES (101, 'Broccoli', 10), (102, 'Beer', 5), (103, 'Snacks', 0);\""
 
 service postgresql restart
 
