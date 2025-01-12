@@ -20,6 +20,13 @@ type StockResponse struct {
 	IsAvailable bool `json:"is_available"`
 }
 
+type HealthResponse struct {
+	Service  string `json:"service"`
+	Status   string `json:"status"`
+	Database string `json:"database"`
+	Error    string `json:"error,omitempty"`
+}
+
 var db *sql.DB
 
 func connectToDatabase() {
@@ -65,40 +72,19 @@ func connectToRabbitMQ() *amqp091.Connection {
 	return nil
 }
 
-func main() {
-	// Connect to the database
-	connectToDatabase()
-	defer db.Close()
-
-	// Connect to RabbitMQ
-	conn := connectToRabbitMQ()
-	defer conn.Close()
-
-	ch, err := conn.Channel()
-	if err != nil {
-		log.Fatalf("Failed to open a channel: %v", err)
-	}
-	defer ch.Close()
-
-	// Declare queue
-	_, err = ch.QueueDeclare("check_stock", true, false, false, false, nil)
-	if err != nil {
-		log.Fatalf("Failed to declare check_stock queue: %v", err)
-	}
-
-	// Consume messages from the check_stock queue
+func processCheckStockQueue(ch *amqp091.Channel) {
 	msgs, err := ch.Consume("check_stock", "", true, false, false, false, nil)
 	if err != nil {
-		log.Fatalf("Failed to register a consumer: %v", err)
+		log.Fatalf("Failed to consume check_stock queue: %v", err)
 	}
 
-	log.Println("Inventory Service waiting for messages...")
+	log.Println("Processing check_stock queue...")
 
 	for msg := range msgs {
 		var req StockRequest
 		err := json.Unmarshal(msg.Body, &req)
 		if err != nil {
-			log.Printf("Failed to parse message: %v", err)
+			log.Printf("Failed to parse stock request: %v", err)
 			continue
 		}
 
@@ -121,7 +107,92 @@ func main() {
 			},
 		)
 		if err != nil {
-			log.Printf("Failed to publish message: %v", err)
+			log.Printf("Failed to publish stock response: %v", err)
 		}
 	}
+}
+
+func listenForHealthCheck(ch *amqp091.Channel) {
+	msgs, err := ch.Consume(
+		"health_check",
+		"",
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		log.Fatalf("Failed to consume health_check queue: %v", err)
+	}
+
+	log.Println("Processing health_check queue...")
+
+	for msg := range msgs {
+		err := db.Ping()
+		dbStatus := "connected"
+		if err != nil {
+			dbStatus = "disconnected"
+		}
+
+		response := HealthResponse{
+			Service:  "Stock Service",
+			Status:   "healthy",
+			Database: dbStatus,
+		}
+		if dbStatus == "disconnected" {
+			response.Status = "unhealthy"
+			response.Error = err.Error()
+		}
+
+		responseBody, _ := json.Marshal(response)
+
+		err = ch.PublishWithContext(
+			nil,
+			"",
+			msg.ReplyTo,
+			false,
+			false,
+			amqp091.Publishing{
+				ContentType:   "application/json",
+				CorrelationId: msg.CorrelationId,
+				Body:          responseBody,
+			},
+		)
+		if err != nil {
+			log.Printf("Failed to publish health response: %v", err)
+		}
+	}
+}
+
+func main() {
+	// Connect to the database
+	connectToDatabase()
+	defer db.Close()
+
+	// Connect to RabbitMQ
+	conn := connectToRabbitMQ()
+	defer conn.Close()
+
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Fatalf("Failed to open a channel: %v", err)
+	}
+	defer ch.Close()
+
+	// Declare queue
+	_, err = ch.QueueDeclare("check_stock", true, false, false, false, nil)
+	if err != nil {
+		log.Fatalf("Failed to declare check_stock queue: %v", err)
+	}
+
+	_, err = ch.QueueDeclare("health_check", true, false, false, false, nil)
+	if err != nil {
+		log.Fatalf("Failed to declare health_check queue: %v", err)
+	}
+
+	go processCheckStockQueue(ch)
+	go listenForHealthCheck(ch)
+
+	select {}
 }

@@ -165,12 +165,95 @@ func unifiedHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	// Declare a unique response queue for this health check
+	responseQueue, err := rabbitChannel.QueueDeclare(
+		"",    // Auto-generate queue name
+		false, // Durable
+		true,  // Auto-delete when unused
+		true,  // Exclusive
+		false, // No-wait
+		nil,
+	)
+	if err != nil {
+		http.Error(w, "Failed to declare response queue", http.StatusInternalServerError)
+		return
+	}
+
+	// Correlation ID for matching responses
+	corrID := "health-check-correlation-id"
+
+	// Publish a health-check request to the `health_check` queue
+	err = rabbitChannel.PublishWithContext(
+		nil,
+		"",
+		"health_check",
+		false,
+		false,
+		amqp091.Publishing{
+			ContentType:   "application/json",
+			CorrelationId: corrID,
+			ReplyTo:       responseQueue.Name,
+		},
+	)
+	if err != nil {
+		http.Error(w, "Failed to publish health-check message", http.StatusInternalServerError)
+		return
+	}
+
+	// Consume responses from the response queue
+	msgs, err := rabbitChannel.Consume(
+		responseQueue.Name,
+		"",
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		http.Error(w, "Failed to consume from response queue", http.StatusInternalServerError)
+		return
+	}
+
+	// Collect responses from all services
+	results := []map[string]interface{}{}
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case msg := <-msgs:
+			// Process response message
+			var healthResponse map[string]interface{}
+			err := json.Unmarshal(msg.Body, &healthResponse)
+			if err != nil {
+				log.Printf("Failed to parse health-check response: %v", err)
+				continue
+			}
+			results = append(results, healthResponse)
+
+			// Break once all services respond (optional if you know service count)
+			if len(results) >= 3 { // Assuming 3 services
+				goto RESPOND
+			}
+		case <-timeout:
+			// Break on timeout
+			goto RESPOND
+		}
+	}
+
+RESPOND:
+	// Send consolidated health status to the client
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
+}
+
 func main() {
 	connectToRabbitMQ()
 	defer rabbitConn.Close()
 	defer rabbitChannel.Close()
 
 	http.HandleFunc("/api/process-order", unifiedHandler)
+	http.HandleFunc("/api/health-check", healthHandler)
 
 	log.Println("API Gateway running on port 8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
