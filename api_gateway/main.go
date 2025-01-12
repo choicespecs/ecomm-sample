@@ -166,85 +166,66 @@ func unifiedHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	// Declare a unique response queue for this health check
-	responseQueue, err := rabbitChannel.QueueDeclare(
-		"",    // Auto-generate queue name
-		false, // Durable
-		true,  // Auto-delete when unused
-		true,  // Exclusive
-		false, // No-wait
-		nil,
-	)
-	if err != nil {
-		http.Error(w, "Failed to declare response queue", http.StatusInternalServerError)
-		return
-	}
+    responseQueue, err := rabbitChannel.QueueDeclare("", false, true, true, false, nil)
+    if err != nil {
+        http.Error(w, "Failed to declare response queue", http.StatusInternalServerError)
+        return
+    }
 
-	// Correlation ID for matching responses
-	corrID := "health-check-correlation-id"
+    corrID := "health-check-correlation-id"
+	log.Printf("Publishing health check request to 'health_check' queue with Correlation ID: %s", corrID)
+    err = rabbitChannel.PublishWithContext(
+        nil,
+        "",
+        "health_check",
+        false,
+        false,
+        amqp091.Publishing{
+            ContentType:   "application/json",
+            CorrelationId: corrID,
+            ReplyTo:       responseQueue.Name,
+        },
+    )
+    if err != nil {
+        http.Error(w, "Failed to publish health-check message", http.StatusInternalServerError)
+        return
+    }
 
-	// Publish a health-check request to the `health_check` queue
-	err = rabbitChannel.PublishWithContext(
-		nil,
-		"",
-		"health_check",
-		false,
-		false,
-		amqp091.Publishing{
-			ContentType:   "application/json",
-			CorrelationId: corrID,
-			ReplyTo:       responseQueue.Name,
-		},
-	)
-	if err != nil {
-		http.Error(w, "Failed to publish health-check message", http.StatusInternalServerError)
-		return
-	}
+    msgs, err := rabbitChannel.Consume(
+        responseQueue.Name,
+        "",
+        true,
+        false,
+        false,
+        false,
+        nil,
+    )
+    if err != nil {
+        http.Error(w, "Failed to consume from response queue", http.StatusInternalServerError)
+        return
+    }
 
-	// Consume responses from the response queue
-	msgs, err := rabbitChannel.Consume(
-		responseQueue.Name,
-		"",
-		true,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		http.Error(w, "Failed to consume from response queue", http.StatusInternalServerError)
-		return
-	}
+    results := []map[string]interface{}{}
+    timeout := time.After(10 * time.Second)
+    for {
+        select {
+        case msg := <-msgs:
+            var healthResponse map[string]interface{}
+            if err := json.Unmarshal(msg.Body, &healthResponse); err != nil {
+                log.Printf("Failed to parse health-check response: %v", err)
+                continue
+            }
+			log.Printf("Parsed health-check response: %v", healthResponse)
+            results = append(results, healthResponse)
+			log.Printf("Health-check response added to results: %v", healthResponse)
 
-	// Collect responses from all services
-	results := []map[string]interface{}{}
-	timeout := time.After(5 * time.Second)
-	for {
-		select {
-		case msg := <-msgs:
-			// Process response message
-			var healthResponse map[string]interface{}
-			err := json.Unmarshal(msg.Body, &healthResponse)
-			if err != nil {
-				log.Printf("Failed to parse health-check response: %v", err)
-				continue
-			}
-			results = append(results, healthResponse)
-
-			// Break once all services respond (optional if you know service count)
-			if len(results) >= 3 { // Assuming 3 services
-				goto RESPOND
-			}
-		case <-timeout:
-			// Break on timeout
-			goto RESPOND
-		}
-	}
-
-RESPOND:
-	// Send consolidated health status to the client
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(results)
+        case <-timeout:
+			log.Printf("Consolidated health-check results: %v", results)
+            w.Header().Set("Content-Type", "application/json")
+            json.NewEncoder(w).Encode(results)
+            return
+        }
+    }
 }
 
 func main() {

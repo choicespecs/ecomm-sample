@@ -112,57 +112,65 @@ func processCheckStockQueue(ch *amqp091.Channel) {
 	}
 }
 
-func listenForHealthCheck(ch *amqp091.Channel) {
-	msgs, err := ch.Consume(
-		"health_check",
-		"",
-		true,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		log.Fatalf("Failed to consume health_check queue: %v", err)
-	}
+func listenForHealthCheck(conn *amqp091.Connection) {
+    ch, err := conn.Channel()
+    if err != nil {
+        log.Fatalf("Failed to open channel for health check: %v", err)
+    }
+    defer ch.Close()
 
-	log.Println("Processing health_check queue...")
+    msgs, err := ch.Consume(
+        "health_check",
+        "",
+        true,
+        false,
+        false,
+        false,
+        nil,
+    )
+    if err != nil {
+        log.Fatalf("Failed to consume health_check queue: %v", err)
+    }
 
-	for msg := range msgs {
-		err := db.Ping()
-		dbStatus := "connected"
-		if err != nil {
-			dbStatus = "disconnected"
-		}
+    log.Println("Stock Service listening for health_check requests...")
 
-		response := HealthResponse{
-			Service:  "Stock Service",
-			Status:   "healthy",
-			Database: dbStatus,
-		}
-		if dbStatus == "disconnected" {
-			response.Status = "unhealthy"
-			response.Error = err.Error()
-		}
+    for msg := range msgs {
+        log.Printf("Received health check request: %s", msg.CorrelationId)
 
-		responseBody, _ := json.Marshal(response)
+        dbStatus := "connected"
+        if err := db.Ping(); err != nil {
+            dbStatus = "disconnected"
+        }
 
-		err = ch.PublishWithContext(
-			nil,
-			"",
-			msg.ReplyTo,
-			false,
-			false,
-			amqp091.Publishing{
-				ContentType:   "application/json",
-				CorrelationId: msg.CorrelationId,
-				Body:          responseBody,
-			},
-		)
-		if err != nil {
-			log.Printf("Failed to publish health response: %v", err)
-		}
-	}
+        response := HealthResponse{
+            Service:  "Stock Service",
+            Status:   "healthy",
+            Database: dbStatus,
+        }
+        if dbStatus == "disconnected" {
+            response.Status = "unhealthy"
+            response.Error = "Database connection failed"
+        }
+
+        responseBody, _ := json.Marshal(response)
+        err := ch.PublishWithContext(
+            nil,
+            "",
+            msg.ReplyTo,
+            false,
+            false,
+            amqp091.Publishing{
+                ContentType:   "application/json",
+                CorrelationId: msg.CorrelationId,
+                Body:          responseBody,
+            },
+        )
+        if err != nil {
+            log.Printf("Failed to publish health response: %v", err)
+        } else {
+            log.Printf("Health response published: %v", response)
+        }
+    }
 }
 
 func main() {
