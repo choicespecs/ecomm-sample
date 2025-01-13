@@ -165,12 +165,86 @@ func unifiedHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+    // Declare the fanout exchange
+    err := rabbitChannel.ExchangeDeclare(
+        "health_check_exchange", // exchange name
+        "fanout",                // exchange type
+        true,                    // durable
+        false,                   // auto-deleted
+        false,                   // internal
+        false,                   // no-wait
+        nil,                     // arguments
+    )
+    if err != nil {
+        http.Error(w, "Failed to declare exchange", http.StatusInternalServerError)
+        return
+    }
+
+    // Declare a unique response queue
+    responseQueue, err := rabbitChannel.QueueDeclare("", false, true, true, false, nil)
+    if err != nil {
+        http.Error(w, "Failed to declare response queue", http.StatusInternalServerError)
+        return
+    }
+
+    corrID := "health-check-correlation-id"
+    log.Printf("Publishing health check request to 'health_check_exchange' with Correlation ID: %s", corrID)
+
+    // Publish the health-check request
+    err = rabbitChannel.PublishWithContext(
+        nil,
+        "health_check_exchange", // exchange name
+        "",                      // routing key (ignored for fanout)
+        false,
+        false,
+        amqp091.Publishing{
+            ContentType:   "application/json",
+            CorrelationId: corrID,
+            ReplyTo:       responseQueue.Name,
+        },
+    )
+    if err != nil {
+        http.Error(w, "Failed to publish health-check message", http.StatusInternalServerError)
+        return
+    }
+
+    // Collect responses from all services
+    msgs, err := rabbitChannel.Consume(responseQueue.Name, "", true, false, false, false, nil)
+    if err != nil {
+        http.Error(w, "Failed to consume response queue", http.StatusInternalServerError)
+        return
+    }
+
+    results := []map[string]interface{}{}
+    timeout := time.After(10 * time.Second)
+    for {
+        select {
+        case msg := <-msgs:
+            var healthResponse map[string]interface{}
+            if err := json.Unmarshal(msg.Body, &healthResponse); err != nil {
+                log.Printf("Failed to parse health-check response: %v", err)
+                continue
+            }
+            log.Printf("Parsed health-check response: %v", healthResponse)
+            results = append(results, healthResponse)
+
+        case <-timeout:
+            log.Printf("Consolidated health-check results: %v", results)
+            w.Header().Set("Content-Type", "application/json")
+            json.NewEncoder(w).Encode(results)
+            return
+        }
+    }
+}
+
 func main() {
 	connectToRabbitMQ()
 	defer rabbitConn.Close()
 	defer rabbitChannel.Close()
 
 	http.HandleFunc("/api/process-order", unifiedHandler)
+	http.HandleFunc("/api/health-check", healthHandler)
 
 	log.Println("API Gateway running on port 8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
