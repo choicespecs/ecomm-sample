@@ -166,6 +166,22 @@ func unifiedHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
+    // Declare the fanout exchange
+    err := rabbitChannel.ExchangeDeclare(
+        "health_check_exchange", // exchange name
+        "fanout",                // exchange type
+        true,                    // durable
+        false,                   // auto-deleted
+        false,                   // internal
+        false,                   // no-wait
+        nil,                     // arguments
+    )
+    if err != nil {
+        http.Error(w, "Failed to declare exchange", http.StatusInternalServerError)
+        return
+    }
+
+    // Declare a unique response queue
     responseQueue, err := rabbitChannel.QueueDeclare("", false, true, true, false, nil)
     if err != nil {
         http.Error(w, "Failed to declare response queue", http.StatusInternalServerError)
@@ -173,11 +189,13 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
     }
 
     corrID := "health-check-correlation-id"
-	log.Printf("Publishing health check request to 'health_check' queue with Correlation ID: %s", corrID)
+    log.Printf("Publishing health check request to 'health_check_exchange' with Correlation ID: %s", corrID)
+
+    // Publish the health-check request
     err = rabbitChannel.PublishWithContext(
         nil,
-        "",
-        "health_check",
+        "health_check_exchange", // exchange name
+        "",                      // routing key (ignored for fanout)
         false,
         false,
         amqp091.Publishing{
@@ -191,17 +209,10 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    msgs, err := rabbitChannel.Consume(
-        responseQueue.Name,
-        "",
-        true,
-        false,
-        false,
-        false,
-        nil,
-    )
+    // Collect responses from all services
+    msgs, err := rabbitChannel.Consume(responseQueue.Name, "", true, false, false, false, nil)
     if err != nil {
-        http.Error(w, "Failed to consume from response queue", http.StatusInternalServerError)
+        http.Error(w, "Failed to consume response queue", http.StatusInternalServerError)
         return
     }
 
@@ -215,12 +226,11 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
                 log.Printf("Failed to parse health-check response: %v", err)
                 continue
             }
-			log.Printf("Parsed health-check response: %v", healthResponse)
+            log.Printf("Parsed health-check response: %v", healthResponse)
             results = append(results, healthResponse)
-			log.Printf("Health-check response added to results: %v", healthResponse)
 
         case <-timeout:
-			log.Printf("Consolidated health-check results: %v", results)
+            log.Printf("Consolidated health-check results: %v", results)
             w.Header().Set("Content-Type", "application/json")
             json.NewEncoder(w).Encode(results)
             return

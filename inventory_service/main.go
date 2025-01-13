@@ -112,15 +112,35 @@ func processCheckStockQueue(ch *amqp091.Channel) {
 	}
 }
 
-func listenForHealthCheck(conn *amqp091.Connection) {
-    ch, err := conn.Channel()
+func listenForHealthCheck(ch *amqp091.Channel) {
+    // Declare a unique, auto-deleted queue for this service
+    queue, err := ch.QueueDeclare(
+        "",    // Auto-generate queue name
+        false, // Durable
+        true,  // Auto-delete
+        true,  // Exclusive
+        false, // No-wait
+        nil,   // Arguments
+    )
     if err != nil {
-        log.Fatalf("Failed to open channel for health check: %v", err)
+        log.Fatalf("Failed to declare queue: %v", err)
     }
-    defer ch.Close()
 
+    // Bind the queue to the fanout exchange
+    err = ch.QueueBind(
+        queue.Name,               // Queue name
+        "",                       // Routing key (ignored for fanout exchange)
+        "health_check_exchange",  // Exchange name
+        false,
+        nil,
+    )
+    if err != nil {
+        log.Fatalf("Failed to bind queue to exchange: %v", err)
+    }
+
+    // Consume messages from the dynamically generated queue
     msgs, err := ch.Consume(
-        "health_check",
+        queue.Name, // Consume from the unique queue
         "",
         true,
         false,
@@ -194,9 +214,18 @@ func main() {
 		log.Fatalf("Failed to declare check_stock queue: %v", err)
 	}
 
-	_, err = ch.QueueDeclare("health_check", true, false, false, false, nil)
+	// Declare the fanout exchange
+	err = ch.ExchangeDeclare(
+		"health_check_exchange", // Exchange name
+		"fanout",                // Type
+		true,                    // Durable
+		false,                   // Auto-deleted
+		false,                   // Internal
+		false,                   // No-wait
+		nil,                     // Arguments
+	)
 	if err != nil {
-		log.Fatalf("Failed to declare health_check queue: %v", err)
+		log.Fatalf("Failed to declare fanout exchange: %v", err)
 	}
 
 	go processCheckStockQueue(ch)

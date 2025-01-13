@@ -76,56 +76,84 @@ func processNotificationQueue(ch *amqp091.Channel) {
 }
 
 func listenForHealthCheck(ch *amqp091.Channel) {
-	msgs, err := ch.Consume(
-		"health_check",
-		"",
-		true,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		log.Fatalf("Failed to consume health_check queue: %v", err)
-	}
+    // Declare a unique, auto-deleted queue for this service
+    queue, err := ch.QueueDeclare(
+        "",    // Auto-generate queue name
+        false, // Durable
+        true,  // Auto-delete
+        true,  // Exclusive
+        false, // No-wait
+        nil,   // Arguments
+    )
+    if err != nil {
+        log.Fatalf("Failed to declare queue: %v", err)
+    }
 
-	log.Println("Processing health_check queue...")
+    // Bind the queue to the fanout exchange
+    err = ch.QueueBind(
+        queue.Name,               // Queue name
+        "",                       // Routing key (ignored for fanout exchange)
+        "health_check_exchange",  // Exchange name
+        false,
+        nil,
+    )
+    if err != nil {
+        log.Fatalf("Failed to bind queue to exchange: %v", err)
+    }
 
-	for msg := range msgs {
-		err := db.Ping()
-		dbStatus := "connected"
-		if err != nil {
-			dbStatus = "disconnected"
-		}
+    // Consume messages from the dynamically generated queue
+    msgs, err := ch.Consume(
+        queue.Name, // Consume from the unique queue
+        "",
+        true,
+        false,
+        false,
+        false,
+        nil,
+    )
+    if err != nil {
+        log.Fatalf("Failed to consume health_check queue: %v", err)
+    }
 
-		response := HealthResponse{
-			Service:  "Notification Service",
-			Status:   "healthy",
-			Database: dbStatus,
-		}
-		if dbStatus == "disconnected" {
-			response.Status = "unhealthy"
-			response.Error = err.Error()
-		}
+    log.Println("Stock Service listening for health_check requests...")
 
-		responseBody, _ := json.Marshal(response)
+    for msg := range msgs {
+        log.Printf("Received health check request: %s", msg.CorrelationId)
 
-		err = ch.PublishWithContext(
-			nil,
-			"",
-			msg.ReplyTo,
-			false,
-			false,
-			amqp091.Publishing{
-				ContentType:   "application/json",
-				CorrelationId: msg.CorrelationId,
-				Body:          responseBody,
-			},
-		)
-		if err != nil {
-			log.Printf("Failed to publish health response: %v", err)
-		}
-	}
+        dbStatus := "connected"
+        if err := db.Ping(); err != nil {
+            dbStatus = "disconnected"
+        }
+
+        response := HealthResponse{
+            Service:  "Notification Service",
+            Status:   "healthy",
+            Database: dbStatus,
+        }
+        if dbStatus == "disconnected" {
+            response.Status = "unhealthy"
+            response.Error = "Database connection failed"
+        }
+
+        responseBody, _ := json.Marshal(response)
+        err := ch.PublishWithContext(
+            nil,
+            "",
+            msg.ReplyTo,
+            false,
+            false,
+            amqp091.Publishing{
+                ContentType:   "application/json",
+                CorrelationId: msg.CorrelationId,
+                Body:          responseBody,
+            },
+        )
+        if err != nil {
+            log.Printf("Failed to publish health response: %v", err)
+        } else {
+            log.Printf("Health response published: %v", response)
+        }
+    }
 }
 
 
@@ -147,10 +175,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to declare notifications queue: %v", err)
 	}
-	
-	_, err = ch.QueueDeclare("health_check", true, false, false, false, nil)
+
+	// Declare the fanout exchange
+	err = ch.ExchangeDeclare(
+		"health_check_exchange", // Exchange name
+		"fanout",                // Type
+		true,                    // Durable
+		false,                   // Auto-deleted
+		false,                   // Internal
+		false,                   // No-wait
+		nil,                     // Arguments
+	)
 	if err != nil {
-		log.Fatalf("Failed to declare health_check queue: %v", err)
+		log.Fatalf("Failed to declare fanout exchange: %v", err)
 	}
 
 	go processNotificationQueue(ch)

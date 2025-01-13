@@ -59,9 +59,14 @@ func connectToRabbitMQ() *amqp091.Connection {
 }
 
 // processOrderQueue listens for messages on the response_order_service queue.
-func processOrderQueue(ch *amqp091.Channel) {
-	// Declare the response queue
-	_, err := ch.QueueDeclare(
+func processOrderQueue(conn *amqp091.Connection) {
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Fatalf("Failed to open a channel: %v", err)
+	}
+	defer ch.Close()
+
+	_, err = ch.QueueDeclare(
 		"response_order_service",
 		true,  // durable
 		false, // auto-delete
@@ -73,15 +78,14 @@ func processOrderQueue(ch *amqp091.Channel) {
 		log.Fatalf("Failed to declare response queue: %v", err)
 	}
 
-	// Start consuming messages
 	msgs, err := ch.Consume(
 		"response_order_service",
-		"",    // consumer name
-		true,  // auto-ack
-		false, // exclusive
-		false, // no-local
-		false, // no-wait
-		nil,   // arguments
+		"",
+		true,
+		false,
+		false,
+		false,
+		nil,
 	)
 	if err != nil {
 		log.Fatalf("Failed to consume from response queue: %v", err)
@@ -89,11 +93,9 @@ func processOrderQueue(ch *amqp091.Channel) {
 
 	log.Println("Order Service waiting for stock responses...")
 
-	// Process each message
 	for msg := range msgs {
 		log.Printf("Stock response received: %s", msg.Body)
 
-		// Publish notification after processing stock response
 		notification := map[string]interface{}{
 			"user_id":  1, // Replace with actual user ID
 			"message":  "Order processed successfully!",
@@ -101,10 +103,10 @@ func processOrderQueue(ch *amqp091.Channel) {
 		notifyBody, _ := json.Marshal(notification)
 		err := ch.PublishWithContext(
 			nil,
-			"",               // exchange
-			"notifications",  // routing key
-			false,            // mandatory
-			false,            // immediate
+			"",
+			"notifications",
+			false,
+			false,
 			amqp091.Publishing{
 				ContentType: "application/json",
 				Body:        notifyBody,
@@ -116,29 +118,55 @@ func processOrderQueue(ch *amqp091.Channel) {
 	}
 }
 
-// listenForHealthCheck listens for health check requests on the health_check queue.
-func listenForHealthCheck(ch *amqp091.Channel) {
-	// Start consuming messages from the health_check queue
+// listenForHealthCheck listens for health-check requests and responds.
+func listenForHealthCheck(conn *amqp091.Connection) {
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Fatalf("Failed to open a channel: %v", err)
+	}
+	defer ch.Close()
+
+	queue, err := ch.QueueDeclare(
+		"",    // Auto-generate queue name
+		false, // Durable
+		true,  // Auto-delete
+		true,  // Exclusive
+		false, // No-wait
+		nil,   // Arguments
+	)
+	if err != nil {
+		log.Fatalf("Failed to declare queue: %v", err)
+	}
+
+	err = ch.QueueBind(
+		queue.Name,
+		"",
+		"health_check_exchange",
+		false,
+		nil,
+	)
+	if err != nil {
+		log.Fatalf("Failed to bind queue to exchange: %v", err)
+	}
+
 	msgs, err := ch.Consume(
-		"health_check",
-		"",    // consumer name
-		true,  // auto-ack
-		false, // exclusive
-		false, // no-local
-		false, // no-wait
-		nil,   // arguments
+		queue.Name,
+		"",
+		true,
+		false,
+		false,
+		false,
+		nil,
 	)
 	if err != nil {
 		log.Fatalf("Failed to consume health_check queue: %v", err)
 	}
 
-	log.Println("Processing health_check queue...")
+	log.Println("Order Service listening for health_check requests...")
 
-	// Process each health check message
 	for msg := range msgs {
-		err := db.Ping()
 		dbStatus := "connected"
-		if err != nil {
+		if err := db.Ping(); err != nil {
 			dbStatus = "disconnected"
 		}
 
@@ -149,11 +177,11 @@ func listenForHealthCheck(ch *amqp091.Channel) {
 		}
 		if dbStatus == "disconnected" {
 			response.Status = "unhealthy"
-			response.Error = err.Error()
+			response.Error = "Database connection failed"
 		}
 
 		responseBody, _ := json.Marshal(response)
-		err = ch.PublishWithContext(
+		err := ch.PublishWithContext(
 			nil,
 			"",
 			msg.ReplyTo,
@@ -167,11 +195,12 @@ func listenForHealthCheck(ch *amqp091.Channel) {
 		)
 		if err != nil {
 			log.Printf("Failed to publish health response: %v", err)
+		} else {
+			log.Printf("Health response published: %v", response)
 		}
 	}
 }
 
-// main initializes the service and starts the goroutines for message handling.
 func main() {
 	connectToDatabase()
 	defer db.Close()
@@ -179,25 +208,29 @@ func main() {
 	conn := connectToRabbitMQ()
 	defer conn.Close()
 
-	ch, err := conn.Channel()
-	if err != nil {
-		log.Fatalf("Failed to open a channel: %v", err)
-	}
-	defer ch.Close()
-
-	// Declare necessary queues
-	queues := []string{"check_stock", "response_order_service", "notifications", "health_check"}
-	for _, queue := range queues {
-		_, err := ch.QueueDeclare(queue, true, false, false, false, nil)
+	err := func() error {
+		ch, err := conn.Channel()
 		if err != nil {
-			log.Fatalf("Failed to declare queue %s: %v", queue, err)
+			return err
 		}
+		defer ch.Close()
+
+		return ch.ExchangeDeclare(
+			"health_check_exchange",
+			"fanout",
+			true,
+			false,
+			false,
+			false,
+			nil,
+		)
+	}()
+	if err != nil {
+		log.Fatalf("Failed to declare fanout exchange: %v", err)
 	}
 
-	// Start processing in separate goroutines
-	go processOrderQueue(ch)
-	go listenForHealthCheck(ch)
+	go processOrderQueue(conn)
+	go listenForHealthCheck(conn)
 
-	// Prevent main from exiting
 	select {}
 }
